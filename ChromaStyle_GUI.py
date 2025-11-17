@@ -2,78 +2,52 @@ import os
 import cv2
 import numpy as np
 import torch
-from PIL import Image, ImageTk  # PIL for Tkinter <-> OpenCV image conversion
+from PIL import Image, ImageTk
 import tkinter as tk
 from tkinter import filedialog, colorchooser, messagebox
 
 try:
     from process import load_seg_model, get_palette, generate_mask
-    from options import opt  # 'opt.output' gives us the output folder path
+    from options import opt
 except ImportError:
     messagebox.showerror("Error", "Required files are missing: 'process.py', 'options.py'")
     exit()
 
-TOP_MASK_ID = 1      
-BOTTOM_MASK_ID = 2  
+TOP_MASK_ID = 1
+BOTTOM_MASK_ID = 2
 
 def change_color(image_bgr, mask_gray, target_color_bgr):
-    """
-    Changes the color of a masked area in an image while preserving texture.
-    
-    This function uses the HSV color space. It replaces the Hue (H) and
-    Saturation (S) of the masked pixels with the target color's H and S,
-    but keeps the original Value (V) to preserve shadows, highlights, and texture.
-
-    Args:
-        image_bgr (np.ndarray): The original image in OpenCV's BGR format.
-        mask_gray (np.ndarray): The grayscale mask (0-255). 
-                                Pixels > 0 will be recolored.
-        target_color_bgr (list): The target color in BGR format, e.g., [255, 0, 0] for Blue.
-
-    Returns:
-        np.ndarray: The new image with the color-changed area in BGR format.
-    """
-    
-    # 1. Convert the single-pixel target BGR color to HSV
     target_color_bgr_np = np.uint8([[target_color_bgr]])
     target_color_hsv = cv2.cvtColor(target_color_bgr_np, cv2.COLOR_BGR2HSV)
     target_hue = target_color_hsv[0][0][0]
     target_saturation = target_color_hsv[0][0][1]
 
-    # 2. Convert the original BGR image to HSV
     hsv_image = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
     
-    # 3. Split the HSV image into H, S, V channels
     h, s, v = cv2.split(hsv_image)
     
-    # 4. Use the mask to create new H and S channels
     h_new = np.where(mask_gray > 0, target_hue, h)
     s_new = np.where(mask_gray > 0, target_saturation, s)
 
-    # 5. Merge the new H, S, and original V channels back together
     final_hsv = cv2.merge([h_new, s_new, v])
 
-    # 6. Convert the final HSV image back to BGR
     final_bgr = cv2.cvtColor(final_hsv, cv2.COLOR_HSV2BGR)
     
     return final_bgr
 
 class ChromaStyleApp:
     def __init__(self, root):
-        """
-        Initializes the main GUI application window.
-        """
         self.root = root
         self.root.title("ChromaStyle - Team 17")
-        self.root.geometry("1000x700") # Set window size
+        self.root.geometry("1000x700")
 
-        # --- State Variables ---
         self.original_image_path = None
-        self.original_pil_image = None # PIL Image (for Tkinter display)
-        self.original_cv_image = None  # OpenCV Image (for processing)
+        self.original_pil_image = None
+        self.original_cv_image = None
+        self.final_cv_image = None
         
-        self.top_color_rgb = (0, 0, 255)     
-        self.bottom_color_rgb = (0, 255, 0) 
+        self.top_color_rgb = (0, 0, 255)
+        self.bottom_color_rgb = (0, 255, 0)
 
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.checkpoint_path = 'model/cloth_segm.pth'
@@ -86,9 +60,6 @@ class ChromaStyleApp:
             root.destroy()
             return
 
-        # --- GUI Layout ---
-        
-        # 1. Top Control Frame (for buttons)
         control_frame = tk.Frame(root, height=100)
         control_frame.pack(fill=tk.X, pady=10)
 
@@ -108,7 +79,9 @@ class ChromaStyleApp:
         self.btn_apply = tk.Button(control_frame, text="4. Apply Color Change", command=self.apply_color_change, font=('Arial', 12, 'bold'))
         self.btn_apply.pack(side=tk.LEFT, padx=20)
 
-        # 2. Bottom Image Frame (for Original vs. Result)
+        self.btn_save = tk.Button(control_frame, text="5. Save Result", command=self.save_image, state=tk.DISABLED)
+        self.btn_save.pack(side=tk.LEFT, padx=10)
+
         image_frame = tk.Frame(root)
         image_frame.pack(fill=tk.BOTH, expand=True)
 
@@ -121,41 +94,39 @@ class ChromaStyleApp:
     def load_image(self):
         path = filedialog.askopenfilename(filetypes=[("Image Files", "*.jpg *.png *.jpeg")])
         if not path:
-            return # User cancelled
+            return
 
         self.original_image_path = path
         
         try:
             n = np.fromfile(self.original_image_path, dtype=np.uint8)
-            # Decode the numpy array into an OpenCV image
             self.original_cv_image = cv2.imdecode(n, cv2.IMREAD_COLOR)
         except Exception as e:
             messagebox.showerror("Image Load Error", f"Failed to load image with OpenCV: {e}")
             self.original_image_path = None
             return
             
-        # Check if OpenCV loading was successful
         if self.original_cv_image is None:
-            messagebox.showerror("Image Load Error", "OpenCV (imdecode) failed to load the image. The file might be corrupt or unsupported.")
+            messagebox.showerror("Image Load Error", "OpenCV (imdecode) failed to load the image.")
             self.original_image_path = None
             return
 
-        # Load image for PIL (display) - PIL handles Korean paths fine
         self.original_pil_image = Image.open(self.original_image_path).convert('RGB')
         
-        # Resize and display the original image
         img_tk = self.resize_image_for_display(self.original_pil_image)
         self.original_label.config(image=img_tk)
         self.original_label.image = img_tk 
+        
+        self.final_cv_image = None
+        self.btn_save.config(state=tk.DISABLED)
+        self.result_label.config(image=None)
+        self.result_label.image = None
 
     def pick_top_color(self):
-        """
-        Opens a color chooser dialog for the 'Top' color.
-        """
         color = colorchooser.askcolor(title="Pick a Top Color")
-        if color[0]: # color[0] is the (R, G, B) tuple
+        if color[0]:
             self.top_color_rgb = (int(color[0][0]), int(color[0][1]), int(color[0][2]))
-            self.top_color_label.config(fg=color[1]) # color[1] is the hex code
+            self.top_color_label.config(fg=color[1])
 
     def pick_bottom_color(self):
         color = colorchooser.askcolor(title="Pick a Bottom Color")
@@ -168,14 +139,14 @@ class ChromaStyleApp:
             messagebox.showwarning("Error", "Please load an image first.")
             return
             
-        # Add a check here for the CV image, which might be None from a failed load
         if self.original_cv_image is None:
             messagebox.showwarning("Error", "Original image (for processing) is not loaded. Please try loading the image again.")
             return
 
         print("Color change process started...")
         self.btn_apply.config(text="Processing...", state=tk.DISABLED)
-        self.root.update_idletasks() # Force GUI update
+        self.btn_save.config(state=tk.DISABLED)
+        self.root.update_idletasks()
 
         try:
             print("1/4: Generating segmentation masks...")
@@ -198,41 +169,72 @@ class ChromaStyleApp:
             bottom_color_bgr = [self.bottom_color_rgb[2], self.bottom_color_rgb[1], self.bottom_color_rgb[0]]
 
             temp_image = change_color(self.original_cv_image.copy(), top_mask, top_color_bgr)
-            # Apply 'bottom' color change *on top of the previous result*
-            final_cv_image = change_color(temp_image, bottom_mask, bottom_color_bgr)
+            
+            self.final_cv_image = change_color(temp_image, bottom_mask, bottom_color_bgr)
             print("4/4: Color change complete.")
 
-            final_pil_image = Image.fromarray(cv2.cvtColor(final_cv_image, cv2.COLOR_BGR2RGB))
+            final_pil_image = Image.fromarray(cv2.cvtColor(self.final_cv_image, cv2.COLOR_BGR2RGB))
             
             img_tk = self.resize_image_for_display(final_pil_image)
             self.result_label.config(image=img_tk)
             self.result_label.image = img_tk
             
+            self.btn_save.config(state=tk.NORMAL)
+            
             messagebox.showinfo("Success", "Color change applied!")
 
         except Exception as e:
             messagebox.showerror("Processing Error", f"An error occurred: {e}")
+            self.final_cv_image = None
+            self.btn_save.config(state=tk.DISABLED)
         finally:
             self.btn_apply.config(text="4. Apply Color Change", state=tk.NORMAL)
 
+    def save_image(self):
+        if self.final_cv_image is None:
+            messagebox.showwarning("Save Error", "There is no result image to save.")
+            return
+
+        original_name = os.path.basename(self.original_image_path)
+        name, ext = os.path.splitext(original_name)
+        default_name = f"{name}_chroma{ext}"
+
+        filepath = filedialog.asksaveasfilename(
+            initialfile=default_name,
+            defaultextension=".png",
+            filetypes=[("PNG Image", "*.png"),
+                       ("JPEG Image", "*.jpg"),
+                       ("All Files", "*.*")]
+        )
+
+        if not filepath:
+            return
+
+        try:
+            ext = os.path.splitext(filepath)[1]
+            is_success, buffer = cv2.imencode(ext, self.final_cv_image)
+            
+            if not is_success:
+                raise Exception("cv2.imencode failed to encode the image.")
+
+            with open(filepath, 'wb') as f:
+                f.write(buffer)
+            
+            messagebox.showinfo("Save Successful", f"Image saved successfully to:\n{filepath}")
+            
+        except Exception as e:
+            messagebox.showerror("Save Error", f"Failed to save image: {e}")
+
     def resize_image_for_display(self, pil_image):
-        """
-        Resizes a PIL image to fit within the GUI display area,
-        maintaining its aspect ratio.
-        """
         w, h = pil_image.size
         
-        # Get current dimensions of the display label
-        max_w = self.original_label.winfo_width() - 20 # Use label width
-        max_h = self.original_label.winfo_height() - 20 # Use label height
+        max_w = self.original_label.winfo_width() - 20
+        max_h = self.original_label.winfo_height() - 20
         
-        # Fallback if window not drawn yet
         if max_w < 50: max_w = self.root.winfo_width() // 2 - 20
         if max_h < 50: max_h = self.root.winfo_height() - 120
 
-        # If image is larger than the display area
         if w > max_w or h > max_h:
-            # Calculate the new size ratio
             ratio = min(max_w / w, max_h / h)
             new_w = int(w * ratio)
             new_h = int(h * ratio)
@@ -244,11 +246,9 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = ChromaStyleApp(root)
     
-    # This small delay helps `winfo_width()` get a more accurate value
-    # for the initial image resize.
     def initial_load():
         if app.original_label.winfo_width() < 50:
             root.after(100, initial_load)
         
     root.after(100, initial_load)
-    root.mainloop() # Start the GUI event loop
+    root.mainloop()
