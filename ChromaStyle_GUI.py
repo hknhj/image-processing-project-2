@@ -13,8 +13,8 @@ except ImportError:
     messagebox.showerror("Error", "Required files are missing: 'process.py', 'options.py'")
     exit()
 
-TOP_MASK_ID = 1      # Manually set: e.g., '1.png' from output/alpha is the top
-BOTTOM_MASK_ID = 2   # Manually set: e.g., '2.png' from output/alpha is the bottom
+TOP_MASK_ID = 1      
+BOTTOM_MASK_ID = 2  
 
 def change_color(image_bgr, mask_gray, target_color_bgr):
     """
@@ -35,7 +35,6 @@ def change_color(image_bgr, mask_gray, target_color_bgr):
     """
     
     # 1. Convert the single-pixel target BGR color to HSV
-    # We create a 1x1 pixel image to correctly convert the color
     target_color_bgr_np = np.uint8([[target_color_bgr]])
     target_color_hsv = cv2.cvtColor(target_color_bgr_np, cv2.COLOR_BGR2HSV)
     target_hue = target_color_hsv[0][0][0]
@@ -48,11 +47,8 @@ def change_color(image_bgr, mask_gray, target_color_bgr):
     h, s, v = cv2.split(hsv_image)
     
     # 4. Use the mask to create new H and S channels
-    # Where the mask is white (mask_gray > 0), use the target H and S.
-    # Otherwise, use the original H and S.
     h_new = np.where(mask_gray > 0, target_hue, h)
     s_new = np.where(mask_gray > 0, target_saturation, s)
-    # The original V (Value) channel is kept to preserve texture and lighting.
 
     # 5. Merge the new H, S, and original V channels back together
     final_hsv = cv2.merge([h_new, s_new, v])
@@ -72,17 +68,13 @@ class ChromaStyleApp:
         self.root.geometry("1000x700") # Set window size
 
         # --- State Variables ---
-        # These variables store the application's state
         self.original_image_path = None
         self.original_pil_image = None # PIL Image (for Tkinter display)
         self.original_cv_image = None  # OpenCV Image (for processing)
         
-        # Default colors (RGB format for Tkinter)
-        self.top_color_rgb = (0, 0, 255)     # Default: Blue
-        self.bottom_color_rgb = (0, 255, 0) # Default: Green
+        self.top_color_rgb = (0, 0, 255)     
+        self.bottom_color_rgb = (0, 255, 0) 
 
-        # --- Load Deep Learning Model ---
-        # Load the segmentation model from process.py on startup
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.checkpoint_path = 'model/cloth_segm.pth'
         try:
@@ -100,23 +92,19 @@ class ChromaStyleApp:
         control_frame = tk.Frame(root, height=100)
         control_frame.pack(fill=tk.X, pady=10)
 
-        # Button: Load Image
         self.btn_load = tk.Button(control_frame, text="1. Load Image", command=self.load_image)
         self.btn_load.pack(side=tk.LEFT, padx=10)
 
-        # Button: Pick Top Color
         self.btn_top_color = tk.Button(control_frame, text="2. Pick Top Color", command=self.pick_top_color)
         self.btn_top_color.pack(side=tk.LEFT, padx=10)
         self.top_color_label = tk.Label(control_frame, text="■", fg=f"#{self.top_color_rgb[0]:02x}{self.top_color_rgb[1]:02x}{self.top_color_rgb[2]:02x}")
-        self.top_color_label.pack(side=tk.LEFT) # Shows the selected color
+        self.top_color_label.pack(side=tk.LEFT)
 
-        # Button: Pick Bottom Color
         self.btn_bottom_color = tk.Button(control_frame, text="3. Pick Bottom Color", command=self.pick_bottom_color)
         self.btn_bottom_color.pack(side=tk.LEFT, padx=10)
         self.bottom_color_label = tk.Label(control_frame, text="■", fg=f"#{self.bottom_color_rgb[0]:02x}{self.bottom_color_rgb[1]:02x}{self.bottom_color_rgb[2]:02x}")
-        self.bottom_color_label.pack(side=tk.LEFT) # Shows the selected color
+        self.bottom_color_label.pack(side=tk.LEFT)
 
-        # Button: Apply Changes
         self.btn_apply = tk.Button(control_frame, text="4. Apply Color Change", command=self.apply_color_change, font=('Arial', 12, 'bold'))
         self.btn_apply.pack(side=tk.LEFT, padx=20)
 
@@ -124,40 +112,45 @@ class ChromaStyleApp:
         image_frame = tk.Frame(root)
         image_frame.pack(fill=tk.BOTH, expand=True)
 
-        # Label to display the Original Image
         self.original_label = tk.Label(image_frame, text="Original Image")
         self.original_label.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10)
         
-        # Label to display the Result Image
         self.result_label = tk.Label(image_frame, text="Result Image")
         self.result_label.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=10)
 
     def load_image(self):
-        """
-        Opens a file dialog for the user to select an image.
-        Loads the image into both PIL (for display) and OpenCV (for processing) formats.
-        """
-        # Open file dialog to choose an image
         path = filedialog.askopenfilename(filetypes=[("Image Files", "*.jpg *.png *.jpeg")])
         if not path:
             return # User cancelled
 
         self.original_image_path = path
         
-        # Load image for OpenCV (processing) - BGR format
-        self.original_cv_image = cv2.imread(self.original_image_path)
-        # Load image for PIL (display) - RGB format
+        try:
+            n = np.fromfile(self.original_image_path, dtype=np.uint8)
+            # Decode the numpy array into an OpenCV image
+            self.original_cv_image = cv2.imdecode(n, cv2.IMREAD_COLOR)
+        except Exception as e:
+            messagebox.showerror("Image Load Error", f"Failed to load image with OpenCV: {e}")
+            self.original_image_path = None
+            return
+            
+        # Check if OpenCV loading was successful
+        if self.original_cv_image is None:
+            messagebox.showerror("Image Load Error", "OpenCV (imdecode) failed to load the image. The file might be corrupt or unsupported.")
+            self.original_image_path = None
+            return
+
+        # Load image for PIL (display) - PIL handles Korean paths fine
         self.original_pil_image = Image.open(self.original_image_path).convert('RGB')
         
         # Resize and display the original image
         img_tk = self.resize_image_for_display(self.original_pil_image)
         self.original_label.config(image=img_tk)
-        self.original_label.image = img_tk # Keep a reference to prevent garbage collection
+        self.original_label.image = img_tk 
 
     def pick_top_color(self):
         """
         Opens a color chooser dialog for the 'Top' color.
-        Updates the state and the color preview label.
         """
         color = colorchooser.askcolor(title="Pick a Top Color")
         if color[0]: # color[0] is the (R, G, B) tuple
@@ -165,72 +158,61 @@ class ChromaStyleApp:
             self.top_color_label.config(fg=color[1]) # color[1] is the hex code
 
     def pick_bottom_color(self):
-        """
-        Opens a color chooser dialog for the 'Bottom' color.
-        Updates the state and the color preview label.
-        """
         color = colorchooser.askcolor(title="Pick a Bottom Color")
         if color[0]:
             self.bottom_color_rgb = (int(color[0][0]), int(color[0][1]), int(color[0][2]))
             self.bottom_color_label.config(fg=color[1])
 
     def apply_color_change(self):
-        # 1. Validation
         if not self.original_image_path:
             messagebox.showwarning("Error", "Please load an image first.")
             return
+            
+        # Add a check here for the CV image, which might be None from a failed load
+        if self.original_cv_image is None:
+            messagebox.showwarning("Error", "Original image (for processing) is not loaded. Please try loading the image again.")
+            return
 
         print("Color change process started...")
-        # Disable button during processing
         self.btn_apply.config(text="Processing...", state=tk.DISABLED)
         self.root.update_idletasks() # Force GUI update
 
         try:
             print("1/4: Generating segmentation masks...")
-            # This function takes a PIL image and saves masks to 'output/alpha/'
             generate_mask(self.original_pil_image, net=self.net, palette=self.palette, device=self.device)
             print("2/4: Mask generation complete.")
 
-            # Build paths to the mask files using the IDs we defined at the top
             top_mask_path = os.path.join(opt.output, 'alpha', f'{TOP_MASK_ID}.png')
             bottom_mask_path = os.path.join(opt.output, 'alpha', f'{BOTTOM_MASK_ID}.png')
 
-            # Load masks using OpenCV (grayscale)
             top_mask = cv2.imread(top_mask_path, cv2.IMREAD_GRAYSCALE)
             bottom_mask = cv2.imread(bottom_mask_path, cv2.IMREAD_GRAYSCALE)
 
-            # Check if masks were loaded successfully
             if top_mask is None or bottom_mask is None:
                 raise FileNotFoundError(f"Could not find mask files in 'output/alpha/'.\n"
                                        f"Checked for {TOP_MASK_ID}.png and {BOTTOM_MASK_ID}.png")
 
             print("3/4: Masks loaded successfully.")
             
-            # Convert Tkinter's RGB color to OpenCV's BGR color
             top_color_bgr = [self.top_color_rgb[2], self.top_color_rgb[1], self.top_color_rgb[0]]
             bottom_color_bgr = [self.bottom_color_rgb[2], self.bottom_color_rgb[1], self.bottom_color_rgb[0]]
 
-            # Apply 'top' color change
             temp_image = change_color(self.original_cv_image.copy(), top_mask, top_color_bgr)
             # Apply 'bottom' color change *on top of the previous result*
             final_cv_image = change_color(temp_image, bottom_mask, bottom_color_bgr)
             print("4/4: Color change complete.")
 
-            # Convert final OpenCV BGR image back to PIL RGB format for display
             final_pil_image = Image.fromarray(cv2.cvtColor(final_cv_image, cv2.COLOR_BGR2RGB))
             
-            # Resize and show in the GUI
             img_tk = self.resize_image_for_display(final_pil_image)
             self.result_label.config(image=img_tk)
-            self.result_label.image = img_tk # Keep reference
+            self.result_label.image = img_tk
             
             messagebox.showinfo("Success", "Color change applied!")
 
         except Exception as e:
-            # Show any errors to the user
             messagebox.showerror("Processing Error", f"An error occurred: {e}")
         finally:
-            # Re-enable the button whether it succeeded or failed
             self.btn_apply.config(text="4. Apply Color Change", state=tk.NORMAL)
 
     def resize_image_for_display(self, pil_image):
@@ -239,9 +221,14 @@ class ChromaStyleApp:
         maintaining its aspect ratio.
         """
         w, h = pil_image.size
-        # Calculate max width/height based on window size
-        max_w = self.root.winfo_width() // 2 - 20 # Half the window width
-        max_h = self.root.winfo_height() - 120 # Window height minus controls
+        
+        # Get current dimensions of the display label
+        max_w = self.original_label.winfo_width() - 20 # Use label width
+        max_h = self.original_label.winfo_height() - 20 # Use label height
+        
+        # Fallback if window not drawn yet
+        if max_w < 50: max_w = self.root.winfo_width() // 2 - 20
+        if max_h < 50: max_h = self.root.winfo_height() - 120
 
         # If image is larger than the display area
         if w > max_w or h > max_h:
@@ -251,14 +238,17 @@ class ChromaStyleApp:
             new_h = int(h * ratio)
             pil_image = pil_image.resize((new_w, new_h), Image.Resampling.LANCZOS)
             
-        # Convert PIL image to a Tkinter-compatible PhotoImage
         return ImageTk.PhotoImage(pil_image)
 
 if __name__ == "__main__":
-    """
-    This is the main entry point of the script.
-    It creates the Tkinter window and starts the application.
-    """
     root = tk.Tk()
     app = ChromaStyleApp(root)
+    
+    # This small delay helps `winfo_width()` get a more accurate value
+    # for the initial image resize.
+    def initial_load():
+        if app.original_label.winfo_width() < 50:
+            root.after(100, initial_load)
+        
+    root.after(100, initial_load)
     root.mainloop() # Start the GUI event loop
